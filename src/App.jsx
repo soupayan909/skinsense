@@ -408,20 +408,16 @@ const EXPLAIN = {
 };
 
 // ── Camera — selfie / gallery (with post-capture description) ─────────────────
-// Detect if running inside a sandboxed iframe (e.g. Claude.ai artifact preview)
-const IN_SANDBOX = typeof window !== "undefined" && (() => {
-  try { return window.self !== window.top; } catch { return true; }
-})();
-
 function Camera({ onCapture, onDescribeReady, user }) {
   const videoRef = useRef(null); const canvasRef = useRef(null);
-  const [mode, setMode] = useState("gallery"); // default to gallery — camera needs real app context
-  const [permState, setPermState] = useState("idle");
+  const [mode, setMode] = useState("selfie");
+  const [permState, setPermState] = useState("idle"); // idle | requesting | granted | denied
   const [ready, setReady] = useState(false);
   const [lighting, setLighting] = useState("good");
   const [captured, setCaptured] = useState(null);
   const [description, setDescription] = useState("");
   const [facingMode, setFacingMode] = useState("user");
+  const [flashActive, setFlashActive] = useState(false);
   const streamRef = useRef(null);
 
   const requestAndStartCamera = async (facing = "user") => {
@@ -429,14 +425,28 @@ function Camera({ onCapture, onDescribeReady, user }) {
     setPermState("requesting"); setReady(false);
     if (!navigator.mediaDevices?.getUserMedia) { setPermState("denied"); return; }
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: facing, width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: facing }, width: { ideal: 1280 }, height: { ideal: 960 } },
+        audio: false
+      });
       streamRef.current = stream;
-      if (videoRef.current) {
-        videoRef.current.srcObject = stream;
-        videoRef.current.onloadedmetadata = () => { videoRef.current.play().then(() => { setPermState("granted"); setReady(true); }).catch(() => setPermState("denied")); };
-      }
+      const video = videoRef.current;
+      if (!video) return;
+      video.srcObject = stream;
+      // Use multiple events for reliability across all browsers/devices
+      const onReady = () => {
+        video.play().catch(() => {});
+        setPermState("granted");
+        setReady(true);
+      };
+      video.addEventListener("canplay", onReady, { once: true });
+      video.addEventListener("loadeddata", onReady, { once: true });
+      // Fallback timeout in case events don't fire
+      setTimeout(() => {
+        if (video.readyState >= 2) onReady();
+      }, 1500);
     } catch (err) {
-      setPermState(err.name === "NotAllowedError" || err.name === "PermissionDeniedError" ? "denied" : "denied");
+      setPermState("denied");
     }
   };
 
@@ -564,84 +574,114 @@ function Camera({ onCapture, onDescribeReady, user }) {
         {/* ── SELFIE ── */}
         {mode === "selfie" && (
           <>
-            {/* Sandbox / iframe detected — camera not available in preview */}
-            {IN_SANDBOX && (permState === "idle" || permState === "denied") && (
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 18, textAlign: "center", padding: "24px 0" }}>
-                <div style={{ width: 80, height: 80, borderRadius: 20, background: T.goldPale, border: `2px solid ${T.gold}40`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 36 }}>📱</div>
+            <style>{`
+              @keyframes spin{to{transform:rotate(360deg)}}
+              @keyframes flash{0%{opacity:1}100%{opacity:0}}
+              @keyframes pulse{0%,100%{transform:scale(1)}50%{transform:scale(1.06)}}
+            `}</style>
+
+            {/* IDLE — ask permission */}
+            {permState === "idle" && (
+              <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:22, textAlign:"center", padding:"30px 0" }}>
+                <div style={{ width:90, height:90, borderRadius:"50%", background:T.sagePale, border:`3px solid ${T.sage}`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:40, animation:"pulse 2s ease-in-out infinite" }}>📷</div>
                 <div>
-                  <h3 style={{ fontFamily: SERIF, fontSize: 22, fontWeight: 400, color: T.ink, margin: "0 0 10px" }}>Live camera in the full app</h3>
-                  <p style={{ fontSize: 14, color: T.muted, lineHeight: 1.7, margin: "0 0 10px", maxWidth: 320 }}>Camera access isn't available in this preview window — it's a browser security restriction for embedded demos. In the real Skinsense app, the camera works perfectly.</p>
-                  <p style={{ fontSize: 13, color: T.sage, fontWeight: 500, margin: 0 }}>For this demo, upload a photo using the button below — full functionality is identical.</p>
+                  <h3 style={{ fontFamily:SERIF, fontSize:24, fontWeight:400, color:T.ink, margin:"0 0 10px" }}>Enable your camera</h3>
+                  <p style={{ fontSize:14, color:T.muted, lineHeight:1.7, margin:0, maxWidth:300 }}>Skinsense uses your camera to take a skin photo for AI analysis. Your photo is never stored without your consent.</p>
                 </div>
-                <button onClick={() => setMode("gallery")} style={{ background: T.sage, color: "#fff", border: "none", borderRadius: 14, padding: "14px 32px", fontSize: 15, fontWeight: 500, cursor: "pointer", fontFamily: SANS }}>
-                  🖼  Upload a photo instead
+                <button onClick={() => requestAndStartCamera(facingMode)} style={{ background:T.sage, color:"#fff", border:"none", borderRadius:16, padding:"16px 40px", fontSize:16, fontWeight:500, cursor:"pointer", fontFamily:SANS, boxShadow:`0 4px 20px ${T.sage}55` }}>
+                  Open camera
                 </button>
-                <div style={{ background: T.bluePale, border: `1px solid ${T.blue}22`, borderRadius: 12, padding: "12px 16px", maxWidth: 320 }}>
-                  <div style={{ fontSize: 12, color: T.blue, fontWeight: 500, marginBottom: 4 }}>ℹ️ For investors & reviewers</div>
-                  <div style={{ fontSize: 12, color: T.muted, lineHeight: 1.6 }}>The full Skinsense app (deployed via Vercel or installed on device) has a fully working live camera with oval guide, lighting detection, and front/rear camera flip.</div>
-                </div>
+                <button onClick={() => setMode("gallery")} style={{ background:"none", border:"none", color:T.muted, fontSize:13, cursor:"pointer", fontFamily:SANS, textDecoration:"underline" }}>
+                  Upload a photo instead
+                </button>
               </div>
             )}
 
-            {/* Non-sandbox: permission idle / requesting */}
-            {!IN_SANDBOX && (permState === "idle" || permState === "requesting") && (
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 20, textAlign: "center", padding: "30px 0" }}>
-                <div style={{ width: 72, height: 72, borderRadius: "50%", background: T.sagePale, border: `2px solid ${T.sage}`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>📷</div>
+            {/* REQUESTING — waiting for browser dialog */}
+            {permState === "requesting" && (
+              <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:18, textAlign:"center", padding:"30px 0" }}>
+                <div style={{ width:60, height:60, border:`3px solid ${T.sage}`, borderTopColor:"transparent", borderRadius:"50%", animation:"spin .8s linear infinite" }} />
                 <div>
-                  <h3 style={{ fontFamily: SERIF, fontSize: 22, fontWeight: 400, color: T.ink, margin: "0 0 8px" }}>Camera access needed</h3>
-                  <p style={{ fontSize: 14, color: T.muted, lineHeight: 1.65, margin: 0 }}>Skinsense needs your camera to take a skin photo. Your photo is only sent to our AI for analysis — it's never stored without your permission.</p>
+                  <h3 style={{ fontFamily:SERIF, fontSize:22, fontWeight:400, color:T.ink, margin:"0 0 8px" }}>Waiting for permission…</h3>
+                  <p style={{ fontSize:14, color:T.muted, margin:0 }}>Allow camera access in the browser popup to continue</p>
                 </div>
-                {permState === "requesting" ? (
-                  <div style={{ display: "flex", alignItems: "center", gap: 10, color: T.muted, fontSize: 14 }}>
-                    <div style={{ width: 18, height: 18, border: `2px solid ${T.sage}`, borderTopColor: "transparent", borderRadius: "50%", animation: "spin .7s linear infinite" }} />
-                    Waiting for permission…
-                  </div>
-                ) : (
-                  <button onClick={() => requestAndStartCamera(facingMode)} style={{ background: T.sage, color: "#fff", border: "none", borderRadius: 14, padding: "14px 32px", fontSize: 15, fontWeight: 500, cursor: "pointer", fontFamily: SANS }}>
-                    Allow camera access
-                  </button>
-                )}
-                <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
               </div>
             )}
 
-            {/* Non-sandbox: permission denied */}
-            {!IN_SANDBOX && permState === "denied" && (
-              <div style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 16, textAlign: "center", padding: "30px 0" }}>
-                <div style={{ width: 72, height: 72, borderRadius: "50%", background: T.redPale, border: `2px solid ${T.red}40`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 32 }}>🚫</div>
+            {/* DENIED */}
+            {permState === "denied" && (
+              <div style={{ flex:1, display:"flex", flexDirection:"column", alignItems:"center", justifyContent:"center", gap:16, textAlign:"center", padding:"30px 0" }}>
+                <div style={{ width:72, height:72, borderRadius:"50%", background:T.redPale, border:`2px solid ${T.red}40`, display:"flex", alignItems:"center", justifyContent:"center", fontSize:32 }}>🚫</div>
                 <div>
-                  <h3 style={{ fontFamily: SERIF, fontSize: 22, fontWeight: 400, color: T.ink, margin: "0 0 8px" }}>Camera blocked</h3>
-                  <p style={{ fontSize: 14, color: T.muted, lineHeight: 1.65, margin: 0 }}>Camera access was denied. Open your browser settings → Camera permissions for this page → set to "Allow". Then tap retry.</p>
+                  <h3 style={{ fontFamily:SERIF, fontSize:22, fontWeight:400, color:T.ink, margin:"0 0 8px" }}>Camera access blocked</h3>
+                  <p style={{ fontSize:14, color:T.muted, lineHeight:1.65, margin:0 }}>Tap the camera icon in your browser's address bar and set it to "Allow", then tap retry.</p>
                 </div>
-                <button onClick={() => requestAndStartCamera(facingMode)} style={{ background: T.sage, color: "#fff", border: "none", borderRadius: 14, padding: "13px 28px", fontSize: 14, fontWeight: 500, cursor: "pointer", fontFamily: SANS }}>Retry camera access</button>
-                <div style={{ color: T.muted, fontSize: 13 }}>or</div>
-                <button onClick={() => setMode("gallery")} style={{ background: T.surface, color: T.ink, border: `1.5px solid ${T.border}`, borderRadius: 14, padding: "12px 24px", fontSize: 14, cursor: "pointer", fontFamily: SANS }}>🖼 Upload a photo instead</button>
+                <button onClick={() => { setPermState("idle"); }} style={{ background:T.sage, color:"#fff", border:"none", borderRadius:14, padding:"13px 28px", fontSize:14, fontWeight:500, cursor:"pointer", fontFamily:SANS }}>Try again</button>
+                <button onClick={() => setMode("gallery")} style={{ background:"none", border:"none", color:T.muted, fontSize:13, cursor:"pointer", fontFamily:SANS, textDecoration:"underline" }}>Upload a photo instead</button>
               </div>
             )}
 
-            {/* Camera live */}
+            {/* GRANTED — fullscreen photo-booth camera */}
             {permState === "granted" && (
-              <>
-                <div style={{ background: T.sagePale, borderRadius: 12, padding: "9px 14px", fontSize: 13, color: T.sageDark, lineHeight: 1.7, marginBottom: 13 }}>
-                  {["Look straight at the camera","Remove glasses or hats","Use even, natural lighting"].map((t, i) => <div key={i}>✓ {t}</div>)}
+              <div style={{ position:"relative", borderRadius:22, overflow:"hidden", background:"#000", flex:1, minHeight:400, display:"flex", flexDirection:"column" }}>
+                {/* Flash overlay */}
+                {flashActive && <div style={{ position:"absolute", inset:0, background:"#fff", zIndex:10, animation:"flash .35s ease-out forwards", borderRadius:22 }} />}
+
+                {/* Video feed — fullscreen */}
+                <video ref={videoRef} style={{ width:"100%", height:"100%", objectFit:"cover", display:"block", transform: facingMode==="user" ? "scaleX(-1)" : "none", flexShrink:0 }} muted playsInline autoPlay />
+
+                {/* Oval face guide overlay */}
+                <svg style={{ position:"absolute", inset:0, width:"100%", height:"100%", pointerEvents:"none" }} viewBox="0 0 360 480" preserveAspectRatio="xMidYMid meet">
+                  <defs>
+                    <mask id="facemask">
+                      <rect width="360" height="480" fill="white"/>
+                      <ellipse cx="180" cy="200" rx="120" ry="155" fill="black"/>
+                    </mask>
+                  </defs>
+                  <rect width="360" height="480" fill="rgba(0,0,0,0.45)" mask="url(#facemask)"/>
+                  <ellipse cx="180" cy="200" rx="120" ry="155" fill="none" stroke={lighting==="good" ? "#6B9E7E" : "#E8A535"} strokeWidth="2.5" strokeDasharray="10 6"/>
+                </svg>
+
+                {/* Top bar — lighting hint */}
+                <div style={{ position:"absolute", top:0, left:0, right:0, padding:"14px 16px", display:"flex", justifyContent:"center" }}>
+                  {lightMsg && (
+                    <div style={{ background:"rgba(0,0,0,.7)", color:T.warn, fontSize:13, padding:"6px 16px", borderRadius:99, fontFamily:SANS }}>
+                      {lightMsg}
+                    </div>
+                  )}
+                  {lighting === "good" && ready && (
+                    <div style={{ background:"rgba(0,0,0,.55)", color:"rgba(255,255,255,.7)", fontSize:12, padding:"5px 14px", borderRadius:99, fontFamily:SANS }}>
+                      ✓ Good lighting — position face in oval
+                    </div>
+                  )}
                 </div>
-                <div style={{ position: "relative", borderRadius: 22, overflow: "hidden", background: "#0a0a0a", marginBottom: 13 }}>
-                  <video ref={videoRef} style={{ width: "100%", display: "block", transform: facingMode === "user" ? "scaleX(-1)" : "none" }} muted playsInline />
-                  <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} viewBox="0 0 360 300" preserveAspectRatio="xMidYMid meet">
-                    <defs><mask id="oval"><rect width="360" height="300" fill="white" /><ellipse cx="180" cy="148" rx="115" ry="135" fill="black" /></mask></defs>
-                    <rect width="360" height="300" fill="rgba(0,0,0,.42)" mask="url(#oval)" />
-                    <ellipse cx="180" cy="148" rx="115" ry="135" fill="none" stroke={lighting === "good" ? "#6B9E7E" : "#E8A535"} strokeWidth="2.5" strokeDasharray="8 5" />
-                    <text x="180" y="296" fill="rgba(255,255,255,.45)" fontSize="11" textAnchor="middle" fontFamily={SANS}>Position face in oval</text>
-                  </svg>
-                  {lightMsg && <div style={{ position: "absolute", top: 12, left: 0, right: 0, textAlign: "center", background: "rgba(0,0,0,.72)", color: T.warn, fontSize: 12, padding: "8px", fontFamily: SANS }}>{lightMsg}</div>}
-                  {!ready && <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,.6)", display: "flex", alignItems: "center", justifyContent: "center", color: "#fff", fontSize: 14, fontFamily: SANS }}>Starting camera…</div>}
-                  <button onClick={() => setFacingMode(f => f === "user" ? "environment" : "user")} style={{ position: "absolute", bottom: 12, right: 12, background: "rgba(0,0,0,.5)", border: "1px solid rgba(255,255,255,.28)", borderRadius: "50%", width: 42, height: 42, display: "flex", alignItems: "center", justifyContent: "center", cursor: "pointer", fontSize: 17, color: "#fff" }}>🔄</button>
+
+                {/* Bottom controls bar */}
+                <div style={{ position:"absolute", bottom:0, left:0, right:0, padding:"20px 24px 28px", display:"flex", alignItems:"center", justifyContent:"space-between", background:"linear-gradient(transparent, rgba(0,0,0,0.65))" }}>
+                  {/* Flip camera */}
+                  <button onClick={() => { setReady(false); setFacingMode(f => f==="user" ? "environment" : "user"); }} style={{ width:44, height:44, borderRadius:"50%", background:"rgba(255,255,255,.18)", border:"1.5px solid rgba(255,255,255,.35)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:20, color:"#fff" }}>🔄</button>
+
+                  {/* Shutter button — large, centered */}
+                  <button
+                    onClick={() => {
+                      setFlashActive(true);
+                      setTimeout(() => setFlashActive(false), 350);
+                      doCapture();
+                    }}
+                    disabled={!ready}
+                    style={{ width:76, height:76, borderRadius:"50%", background:"#fff", border:"5px solid rgba(255,255,255,.5)", cursor: ready ? "pointer" : "not-allowed", boxShadow:"0 0 0 3px rgba(255,255,255,.25)", display:"flex", alignItems:"center", justifyContent:"center", transition:"transform .1s", flexShrink:0 }}
+                    onMouseDown={e => e.currentTarget.style.transform = "scale(.93)"}
+                    onMouseUp={e => e.currentTarget.style.transform = "scale(1)"}
+                  >
+                    <div style={{ width:58, height:58, borderRadius:"50%", background: ready ? "#fff" : "#aaa", border:"2px solid rgba(0,0,0,.12)" }} />
+                  </button>
+
+                  {/* Switch to upload */}
+                  <button onClick={() => setMode("gallery")} style={{ width:44, height:44, borderRadius:"50%", background:"rgba(255,255,255,.18)", border:"1.5px solid rgba(255,255,255,.35)", display:"flex", alignItems:"center", justifyContent:"center", cursor:"pointer", fontSize:18, color:"#fff" }}>🖼</button>
                 </div>
-                <canvas ref={canvasRef} style={{ display: "none" }} />
-                <button onClick={doCapture} disabled={!ready} style={{ width: "100%", background: !ready ? T.border : T.sage, color: "#fff", border: "none", borderRadius: 14, padding: "15px", fontSize: 16, fontWeight: 500, cursor: !ready ? "not-allowed" : "pointer", fontFamily: SANS, transition: "background .2s" }}>
-                  {ready ? "📸  Take photo" : "Starting camera…"}
-                </button>
-              </>
+
+                <canvas ref={canvasRef} style={{ display:"none" }} />
+              </div>
             )}
           </>
         )}
